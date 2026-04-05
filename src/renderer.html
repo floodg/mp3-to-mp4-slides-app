@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MP3 to MP4 Slides App</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --muted: #94a3b8;
+      --text: #e5e7eb;
+      --accent: #22c55e;
+      --border: #1f2937;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, Arial, sans-serif;
+      background: linear-gradient(180deg, #0b1220 0%, #111827 100%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .card {
+      background: rgba(17, 24, 39, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+      margin-bottom: 18px;
+    }
+    h1, h2, h3 { margin-top: 0; }
+    .muted { color: var(--muted); }
+    button {
+      border: 0;
+      background: var(--accent);
+      color: #052e16;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      margin-right: 8px;
+      margin-top: 8px;
+    }
+    button.secondary {
+      background: #1f2937;
+      color: var(--text);
+      border: 1px solid #334155;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #334155;
+      background: #0b1220;
+      color: var(--text);
+    }
+    input[type="checkbox"] {
+      width: auto;
+      margin-right: 8px;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    .slides, .stack { display: grid; gap: 12px; }
+    .stack-tight { display: grid; gap: 6px; }
+    .slide-item {
+      display: grid;
+      grid-template-columns: 110px 1fr 160px 150px;
+      gap: 14px;
+      align-items: center;
+      border: 1px solid #253044;
+      border-radius: 14px;
+      padding: 12px;
+      background: rgba(15, 23, 42, 0.85);
+    }
+    .slide-item img {
+      width: 110px;
+      height: 62px;
+      object-fit: cover;
+      border-radius: 8px;
+      border: 1px solid #334155;
+    }
+    .status {
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 13px;
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 14px;
+      min-height: 90px;
+    }
+    .inline { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .path-box {
+      padding: 10px 12px;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: #0b1220;
+      min-height: 42px;
+      width: 100%;
+      word-break: break-all;
+    }
+    .hidden { display: none; }
+    @media (max-width: 900px) {
+      .row, .row-3 { grid-template-columns: 1fr; }
+      .slide-item { grid-template-columns: 1fr; }
+      .slide-item img { width: 100%; height: 160px; }
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 220px;
+      resize: vertical;
+      background: #0b1220;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      font: 14px/1.5 Consolas, monospace;
+    }
+    .wrap-buttons { flex-wrap: wrap; }
+    .progress-row {
+      margin-top: 14px;
+      display: grid;
+      gap: 8px;
+    }
+    .progress-row progress {
+      width: 100%;
+      height: 12px;
+      border-radius: 8px;
+      accent-color: var(--accent);
+    }
+
+    .wizard-hero h1 { margin-bottom: 8px; }
+    .wizard-meta { padding: 14px 18px; margin-bottom: 12px; }
+    .wizard-meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    #wizardProgressText { font-weight: 600; color: var(--text); }
+    .wizard-dots {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .wizard-dot {
+      width: 11px;
+      height: 11px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: #334155;
+      cursor: pointer;
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+    .wizard-dot:hover { background: #475569; }
+    .wizard-dot-active {
+      background: var(--accent);
+      transform: scale(1.15);
+    }
+    .wizard-step { padding: 0; margin-bottom: 12px; overflow: hidden; }
+    .wizard-step-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      width: 100%;
+      margin: 0;
+      padding: 16px 18px;
+      border: 0;
+      border-radius: 18px;
+      background: rgba(15, 23, 42, 0.5);
+      color: var(--text);
+      font: inherit;
+      font-size: 1.05rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-align: left;
+      transition: background 0.15s ease;
+    }
+    .wizard-step-header:hover {
+      background: rgba(30, 41, 59, 0.75);
+    }
+    .wizard-step-open .wizard-step-header {
+      background: rgba(34, 197, 94, 0.12);
+      border-bottom: 1px solid var(--border);
+      border-radius: 18px 18px 0 0;
+    }
+    .wizard-step-num {
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      font-size: 0.95rem;
+    }
+    .wizard-step-open .wizard-step-num {
+      background: rgba(34, 197, 94, 0.25);
+      border-color: rgba(34, 197, 94, 0.45);
+      color: var(--accent);
+    }
+    .wizard-step-title { flex: 1; }
+    .wizard-step-chevron {
+      flex-shrink: 0;
+      font-size: 0.7rem;
+      color: var(--muted);
+      transition: transform 0.2s ease;
+    }
+    .wizard-step-open .wizard-step-chevron {
+      transform: rotate(180deg);
+    }
+    .wizard-step-body {
+      display: none;
+      padding: 18px 20px 20px;
+      border-top: 1px solid transparent;
+    }
+    .wizard-step-open .wizard-step-body {
+      display: block;
+    }
+    .wizard-nav-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 16px 18px;
+      margin-bottom: 24px;
+      position: sticky;
+      bottom: 12px;
+      z-index: 5;
+      background: rgba(17, 24, 39, 0.92);
+      backdrop-filter: blur(8px);
+    }
+    .wizard-nav-bar button { margin-top: 0; }
+
+    .trophy-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(2, 6, 23, 0.9);
+    }
+    .trophy-overlay.hidden { display: none; }
+    .trophy-modal {
+      text-align: center;
+      max-width: 540px;
+      padding: 36px 32px;
+      background: #111827;
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55);
+    }
+    .trophy-emoji {
+      font-size: clamp(7rem, 24vw, 14rem);
+      line-height: 1;
+      margin-bottom: 4px;
+      filter: drop-shadow(0 10px 28px rgba(234, 179, 8, 0.4));
+    }
+    .trophy-headline {
+      margin: 0 0 14px;
+      font-size: clamp(1.5rem, 4vw, 2rem);
+    }
+    .trophy-detail {
+      margin: 0 0 22px;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    code { font-size: 0.9em; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card wizard-hero">
+      <h1>MP3 to MP4 with Slides</h1>
+      <p class="muted" style="margin-bottom: 0;">Turn an audio file into an MP4 slideshow, generate captions, and extract the transcript as TXT, SRT, or VTT. Work through the steps below—you can open any step from the header or use Continue / Back.</p>
+    </div>
+
+    <div class="card wizard-meta">
+      <div class="wizard-meta-row">
+        <span id="wizardProgressText">Step 1 of 5</span>
+        <div class="wizard-dots" id="wizardDots" role="group" aria-label="Wizard steps"></div>
+      </div>
+    </div>
+
+    <div class="card wizard-step wizard-step-open" data-wizard-step="0">
+      <button type="button" class="wizard-step-header" id="wizardHeader0" aria-expanded="true" aria-controls="wizardPanel0">
+        <span class="wizard-step-num">1</span>
+        <span class="wizard-step-title">Source audio</span>
+        <span class="wizard-step-chevron" aria-hidden="true">▼</span>
+      </button>
+      <div class="wizard-step-body" id="wizardPanel0" role="region" aria-labelledby="wizardHeader0">
+        <div class="inline">
+          <button id="pickAudioBtn">Choose audio</button>
+        </div>
+        <div id="audioPath" class="path-box muted" style="margin-top: 14px;">No audio selected</div>
+      </div>
+    </div>
+
+    <div class="card wizard-step" data-wizard-step="1">
+      <button type="button" class="wizard-step-header" id="wizardHeader1" aria-expanded="false" aria-controls="wizardPanel1">
+        <span class="wizard-step-num">2</span>
+        <span class="wizard-step-title">Export settings</span>
+        <span class="wizard-step-chevron" aria-hidden="true">▼</span>
+      </button>
+      <div class="wizard-step-body" id="wizardPanel1" role="region" aria-labelledby="wizardHeader1">
+        <div class="row">
+          <div class="stack-tight">
+            <label for="resolution">Resolution</label>
+            <select id="resolution">
+              <option value="1920x1080">1920x1080 (Full HD)</option>
+              <option value="1280x720">1280x720 (HD)</option>
+            </select>
+          </div>
+          <div class="stack-tight">
+            <label for="fps">Frames per second</label>
+            <input id="fps" type="number" min="1" max="60" value="30" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card wizard-step" data-wizard-step="2">
+      <button type="button" class="wizard-step-header" id="wizardHeader2" aria-expanded="false" aria-controls="wizardPanel2">
+        <span class="wizard-step-num">3</span>
+        <span class="wizard-step-title">Captions and transcript</span>
+        <span class="wizard-step-chevron" aria-hidden="true">▼</span>
+      </button>
+      <div class="wizard-step-body" id="wizardPanel2" role="region" aria-labelledby="wizardHeader2">
+        <p class="muted" style="margin-top: 0;">On export with burned-in captions, the picture is letterboxed: burned text goes in the top black bar; the bottom bar is left clear for player subtitles (other languages) on a black strip.</p>
+        <div class="inline" style="margin-bottom: 14px;">
+          <label><input id="captionsEnabled" type="checkbox" /> Enable captions / transcript tools</label>
+        </div>
+        <div id="captionsConfig" class="hidden stack">
+          <div class="row">
+            <div class="stack-tight">
+              <label for="captionMode">Caption source</label>
+              <select id="captionMode">
+                <option value="importSrt">Import SRT file</option>
+                <option value="whisperCpp">Generate transcript with whisper.cpp</option>
+              </select>
+            </div>
+            <div class="stack-tight">
+              <label for="captionFontSize">Caption font size (burned text scales with export height; raise this for larger subtitles)</label>
+              <input id="captionFontSize" type="number" min="16" max="120" value="36" />
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="stack-tight">
+              <label for="captionMarginV">Burned caption inset (from top)</label>
+              <input id="captionMarginV" type="number" min="10" max="150" value="26" />
+            </div>
+            <div></div>
+          </div>
+
+          <div id="srtPanel" class="stack">
+            <div class="inline">
+              <button id="pickSrtBtn">Choose SRT</button>
+            </div>
+            <div id="srtPath" class="path-box muted">No SRT selected</div>
+          </div>
+
+          <div id="whisperPanel" class="stack hidden">
+            <div class="row">
+              <div class="stack-tight">
+                <button id="pickWhisperExeBtn" type="button">Choose whisper.cpp executable</button>
+                <div id="whisperExePath" class="path-box muted">No executable selected</div>
+              </div>
+              <div class="stack-tight">
+                <button id="pickWhisperModelBtn" type="button">Choose whisper model</button>
+                <div id="whisperModelPath" class="path-box muted">No model selected</div>
+              </div>
+            </div>
+            <p class="muted">Expected executable: <code>main</code> or <code>whisper-cli</code> from a whisper.cpp build. The app converts audio to 16kHz mono WAV, runs whisper.cpp, generates an SRT, and can save transcript files separately.</p>
+          </div>
+
+          <div class="stack">
+            <p class="muted" style="margin: 0;">Transcript preview fills in after you run the one-click export on the last step (TXT, SRT, and VTT are saved automatically).</p>
+            <div id="transcriptMeta" class="muted">No transcript yet — complete step 5.</div>
+            <textarea id="transcriptPreview" readonly placeholder="Preview appears after a successful full export…"></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card wizard-step" data-wizard-step="3">
+      <button type="button" class="wizard-step-header" id="wizardHeader3" aria-expanded="false" aria-controls="wizardPanel3">
+        <span class="wizard-step-num">4</span>
+        <span class="wizard-step-title">Slides</span>
+        <span class="wizard-step-chevron" aria-hidden="true">▼</span>
+      </button>
+      <div class="wizard-step-body" id="wizardPanel3" role="region" aria-labelledby="wizardHeader3">
+        <div class="inline" style="margin-bottom: 14px; gap: 10px;">
+          <button id="pickSlidesBtn">Add slide images</button>
+          <button id="clearSlidesBtn" class="secondary">Clear slides</button>
+        </div>
+        <div id="slidesList" class="slides"></div>
+      </div>
+    </div>
+
+    <div class="card wizard-step" data-wizard-step="4">
+      <button type="button" class="wizard-step-header" id="wizardHeader4" aria-expanded="false" aria-controls="wizardPanel4">
+        <span class="wizard-step-num">5</span>
+        <span class="wizard-step-title">Export</span>
+        <span class="wizard-step-chevron" aria-hidden="true">▼</span>
+      </button>
+      <div class="wizard-step-body" id="wizardPanel4" role="region" aria-labelledby="wizardHeader4">
+        <p class="muted" style="margin-top: 0;">Single progress bar: transcript (if captions are on) → save TXT, SRT, and VTT under <code>output/transcripts</code> → build MP4 in <code>output/exports</code> (named from your audio file).</p>
+        <button type="button" id="runPipelineBtn">Generate, save all formats, and export MP4</button>
+        <div id="transcriptionProgressWrap" class="progress-row hidden" style="margin-top: 16px;">
+          <span id="transcriptionProgressLabel" class="muted"></span>
+          <progress id="transcriptionProgress" max="100" value="0"></progress>
+        </div>
+        <div id="status" class="status" style="margin-top: 14px;">Ready.</div>
+      </div>
+    </div>
+
+    <div class="card wizard-nav-bar">
+      <button type="button" class="secondary" id="wizardPrev" disabled>Back</button>
+      <button type="button" id="wizardNext">Continue</button>
+    </div>
+  </div>
+
+  <div id="trophyOverlay" class="trophy-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="trophyTitle">
+    <div class="trophy-modal">
+      <div class="trophy-emoji" aria-hidden="true">🏆</div>
+      <h2 id="trophyTitle" class="trophy-headline">You did it!</h2>
+      <p id="trophyDetail" class="trophy-detail muted"></p>
+      <button type="button" class="secondary" id="trophyDismiss">Close</button>
+    </div>
+  </div>
+
+  <script>
+    const DEFAULT_WHISPER_EXECUTABLE = 'C:\\Support\\Tools\\whisper\\Release\\whisper-cli.exe';
+    const DEFAULT_WHISPER_MODEL = 'C:\\Support\\Tools\\whisper\\Models\\ggml-base.en.bin';
+
+    const state = {
+      audioPath: null,
+      slides: [],
+      captionsEnabled: false,
+      captionMode: 'importSrt',
+      srtPath: null,
+      whisperExecutablePath: DEFAULT_WHISPER_EXECUTABLE,
+      whisperModelPath: DEFAULT_WHISPER_MODEL,
+      transcript: {
+        plainText: '',
+        srtContent: '',
+        vttContent: '',
+        sourcePath: null
+      }
+    };
+
+    const audioPathEl = document.getElementById('audioPath');
+    const slidesListEl = document.getElementById('slidesList');
+    const statusEl = document.getElementById('status');
+    const captionsEnabledEl = document.getElementById('captionsEnabled');
+    const captionsConfigEl = document.getElementById('captionsConfig');
+    const captionModeEl = document.getElementById('captionMode');
+    const srtPanelEl = document.getElementById('srtPanel');
+    const whisperPanelEl = document.getElementById('whisperPanel');
+    const srtPathEl = document.getElementById('srtPath');
+    const whisperExePathEl = document.getElementById('whisperExePath');
+    const whisperModelPathEl = document.getElementById('whisperModelPath');
+    const transcriptPreviewEl = document.getElementById('transcriptPreview');
+    const transcriptMetaEl = document.getElementById('transcriptMeta');
+    const runPipelineBtn = document.getElementById('runPipelineBtn');
+    const trophyOverlay = document.getElementById('trophyOverlay');
+    const trophyDetail = document.getElementById('trophyDetail');
+    const trophyDismiss = document.getElementById('trophyDismiss');
+    const transcriptionProgressWrap = document.getElementById('transcriptionProgressWrap');
+    const transcriptionProgressBar = document.getElementById('transcriptionProgress');
+    const transcriptionProgressLabel = document.getElementById('transcriptionProgressLabel');
+
+    const WIZARD_STEP_COUNT = 5;
+    let wizardStep = 0;
+    const wizardProgressText = document.getElementById('wizardProgressText');
+    const wizardDots = document.getElementById('wizardDots');
+    const wizardPrev = document.getElementById('wizardPrev');
+    const wizardNext = document.getElementById('wizardNext');
+
+    function renderWizardDots() {
+      wizardDots.innerHTML = '';
+      for (let i = 0; i < WIZARD_STEP_COUNT; i++) {
+        const d = document.createElement('button');
+        d.type = 'button';
+        d.className = 'wizard-dot' + (i === wizardStep ? ' wizard-dot-active' : '');
+        d.title = `Step ${i + 1}`;
+        d.setAttribute('aria-label', `Go to step ${i + 1}`);
+        d.addEventListener('click', () => setWizardStep(i));
+        wizardDots.appendChild(d);
+      }
+    }
+
+    function setWizardStep(n) {
+      wizardStep = Math.max(0, Math.min(WIZARD_STEP_COUNT - 1, n));
+      document.querySelectorAll('.wizard-step').forEach((el) => {
+        const i = Number(el.getAttribute('data-wizard-step'));
+        const open = i === wizardStep;
+        el.classList.toggle('wizard-step-open', open);
+        const hdr = el.querySelector('.wizard-step-header');
+        if (hdr) hdr.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      wizardProgressText.textContent = `Step ${wizardStep + 1} of ${WIZARD_STEP_COUNT}`;
+      wizardPrev.disabled = wizardStep === 0;
+      const onLast = wizardStep === WIZARD_STEP_COUNT - 1;
+      wizardNext.disabled = onLast;
+      wizardNext.textContent = onLast ? 'Last step' : 'Continue';
+      renderWizardDots();
+      document.querySelector(`.wizard-step[data-wizard-step="${wizardStep}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    document.querySelectorAll('.wizard-step-header').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const step = Number(btn.closest('.wizard-step')?.getAttribute('data-wizard-step'));
+        if (!Number.isNaN(step)) setWizardStep(step);
+      });
+    });
+
+    wizardPrev.addEventListener('click', () => setWizardStep(wizardStep - 1));
+    wizardNext.addEventListener('click', () => setWizardStep(wizardStep + 1));
+
+    function showTrophyCelebration(detailText) {
+      trophyDetail.textContent = detailText;
+      trophyOverlay.classList.remove('hidden');
+    }
+
+    trophyDismiss.addEventListener('click', () => trophyOverlay.classList.add('hidden'));
+    trophyOverlay.addEventListener('click', (e) => {
+      if (e.target === trophyOverlay) trophyOverlay.classList.add('hidden');
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !trophyOverlay.classList.contains('hidden')) {
+        trophyOverlay.classList.add('hidden');
+      }
+    });
+
+    function applyTranscriptionProgress(p) {
+      transcriptionProgressLabel.textContent = p.label || '';
+      if (p.percent == null) {
+        transcriptionProgressBar.removeAttribute('value');
+      } else {
+        transcriptionProgressBar.value = p.percent;
+      }
+    }
+
+    function resetTranscriptionProgress() {
+      transcriptionProgressWrap.classList.add('hidden');
+      transcriptionProgressLabel.textContent = '';
+      transcriptionProgressBar.value = 0;
+    }
+
+    function setStatus(message) {
+      statusEl.textContent = message;
+    }
+
+    function getFilename(filePath) {
+      return filePath.split(/[\\/]/).pop();
+    }
+
+    function getCaptionsPayload() {
+      return {
+        enabled: state.captionsEnabled,
+        mode: state.captionsEnabled ? state.captionMode : 'none',
+        srtPath: state.srtPath,
+        whisperExecutablePath: state.whisperExecutablePath,
+        whisperModelPath: state.whisperModelPath,
+        fontSize: Number(document.getElementById('captionFontSize').value || 28),
+        marginV: Number(document.getElementById('captionMarginV').value || 26)
+      };
+    }
+
+    function moveSlide(index, direction) {
+      const target = index + direction;
+      if (target < 0 || target >= state.slides.length) return;
+      const item = state.slides[index];
+      state.slides[index] = state.slides[target];
+      state.slides[target] = item;
+      renderSlides();
+    }
+
+    function removeSlide(index) {
+      state.slides.splice(index, 1);
+      renderSlides();
+    }
+
+    function updateDuration(index, value) {
+      const parsed = Number(value);
+      state.slides[index].durationSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    }
+
+    function renderTranscript() {
+      transcriptPreviewEl.value = state.transcript.plainText || '';
+      const has = Boolean(state.transcript.plainText || state.transcript.sourcePath);
+      transcriptMetaEl.textContent = has
+        ? `Transcript preview below.${state.transcript.sourcePath ? ` Source: ${state.transcript.sourcePath}` : ''}`
+        : 'No transcript yet — complete step 5.';
+      transcriptMetaEl.classList.toggle('muted', !has);
+    }
+
+    function clearTranscript() {
+      state.transcript = {
+        plainText: '',
+        srtContent: '',
+        vttContent: '',
+        sourcePath: null
+      };
+      renderTranscript();
+    }
+
+    function renderCaptionMode() {
+      captionsConfigEl.classList.toggle('hidden', !state.captionsEnabled);
+      srtPanelEl.classList.toggle('hidden', state.captionMode !== 'importSrt');
+      whisperPanelEl.classList.toggle('hidden', state.captionMode !== 'whisperCpp');
+      srtPathEl.textContent = state.srtPath || 'No SRT selected';
+      whisperExePathEl.textContent = state.whisperExecutablePath || 'No executable selected';
+      whisperModelPathEl.textContent = state.whisperModelPath || 'No model selected';
+      srtPathEl.classList.toggle('muted', !state.srtPath);
+      whisperExePathEl.classList.toggle('muted', !state.whisperExecutablePath);
+      whisperModelPathEl.classList.toggle('muted', !state.whisperModelPath);
+    }
+
+    function renderSlides() {
+      slidesListEl.innerHTML = '';
+      if (!state.slides.length) {
+        slidesListEl.innerHTML = '<p class="muted">No slides added yet.</p>';
+        return;
+      }
+
+      state.slides.forEach((slide, index) => {
+        const container = document.createElement('div');
+        container.className = 'slide-item';
+        container.innerHTML = `
+          <img src="file://${slide.path}" alt="Slide preview" />
+          <div class="stack-tight">
+            <strong>${getFilename(slide.path)}</strong>
+            <span class="muted">${slide.path}</span>
+          </div>
+          <div class="stack-tight">
+            <label>Duration (seconds)</label>
+            <input type="number" min="0" step="0.1" value="${slide.durationSeconds ?? ''}" placeholder="Auto" />
+          </div>
+          <div>
+            <button class="secondary up-btn">Up</button>
+            <button class="secondary down-btn">Down</button>
+            <button class="secondary remove-btn">Remove</button>
+          </div>
+        `;
+
+        const input = container.querySelector('input');
+        input.addEventListener('input', (e) => updateDuration(index, e.target.value));
+        container.querySelector('.up-btn').addEventListener('click', () => moveSlide(index, -1));
+        container.querySelector('.down-btn').addEventListener('click', () => moveSlide(index, 1));
+        container.querySelector('.remove-btn').addEventListener('click', () => removeSlide(index));
+        slidesListEl.appendChild(container);
+      });
+    }
+
+    document.getElementById('pickAudioBtn').addEventListener('click', async () => {
+      const path = await window.appApi.pickAudio();
+      if (path) {
+        state.audioPath = path;
+        audioPathEl.textContent = path;
+        clearTranscript();
+      }
+    });
+
+    document.getElementById('pickSlidesBtn').addEventListener('click', async () => {
+      const paths = await window.appApi.pickSlides();
+      if (paths?.length) {
+        state.slides.push(...paths.map(path => ({ path })));
+        renderSlides();
+      }
+    });
+
+    document.getElementById('clearSlidesBtn').addEventListener('click', () => {
+      state.slides = [];
+      renderSlides();
+    });
+
+    captionsEnabledEl.addEventListener('change', (e) => {
+      state.captionsEnabled = e.target.checked;
+      renderCaptionMode();
+    });
+
+    captionModeEl.addEventListener('change', (e) => {
+      state.captionMode = e.target.value;
+      clearTranscript();
+      renderCaptionMode();
+    });
+
+    document.getElementById('pickSrtBtn').addEventListener('click', async () => {
+      const srtPath = await window.appApi.pickSrt();
+      if (srtPath) {
+        state.srtPath = srtPath;
+        clearTranscript();
+        renderCaptionMode();
+      }
+    });
+
+    document.getElementById('pickWhisperExeBtn').addEventListener('click', async () => {
+      const filePath = await window.appApi.pickAnyFile();
+      if (filePath) {
+        state.whisperExecutablePath = filePath;
+        clearTranscript();
+        renderCaptionMode();
+      }
+    });
+
+    document.getElementById('pickWhisperModelBtn').addEventListener('click', async () => {
+      const filePath = await window.appApi.pickAnyFile();
+      if (filePath) {
+        state.whisperModelPath = filePath;
+        clearTranscript();
+        renderCaptionMode();
+      }
+    });
+
+    runPipelineBtn.addEventListener('click', async () => {
+      if (!state.audioPath) {
+        setStatus('Choose an audio file first.');
+        return;
+      }
+      if (!state.slides.length) {
+        setStatus('Add at least one slide first.');
+        return;
+      }
+      if (state.captionsEnabled && state.captionMode === 'importSrt' && !state.srtPath) {
+        setStatus('Captions are enabled. Choose an SRT file first.');
+        return;
+      }
+      if (state.captionsEnabled && state.captionMode === 'whisperCpp' && (!state.whisperExecutablePath || !state.whisperModelPath)) {
+        setStatus('Captions are enabled. Choose the whisper.cpp executable and model file first.');
+        return;
+      }
+
+      const resolution = document.getElementById('resolution').value;
+      const fps = Number(document.getElementById('fps').value || 30);
+
+      runPipelineBtn.disabled = true;
+      setStatus('Running full pipeline…');
+
+      transcriptionProgressWrap.classList.remove('hidden');
+      applyTranscriptionProgress({ stage: '', percent: null, label: 'Starting…' });
+      const unsubProgress = window.appApi.onTranscriptionProgress(applyTranscriptionProgress);
+      try {
+        const result = await window.appApi.runFullPipeline({
+          audioPath: state.audioPath,
+          slides: state.slides,
+          resolution,
+          fps,
+          captions: getCaptionsPayload()
+        });
+
+        if (!result?.success) {
+          setStatus(`Pipeline failed.\n${result?.error || 'Unknown error.'}`);
+          return;
+        }
+
+        if (state.captionsEnabled && result.transcriptPaths) {
+          state.transcript = {
+            plainText: result.plainText || '',
+            srtContent: result.srtContent || '',
+            vttContent: result.vttContent || '',
+            sourcePath: result.transcriptPaths.srt || null
+          };
+          state.srtPath = result.transcriptPaths.srt;
+          renderCaptionMode();
+        } else {
+          clearTranscript();
+        }
+        renderTranscript();
+
+        const summary = [
+          `Video:\n${result.mp4Path}`,
+          result.transcriptPaths
+            ? `Transcripts (TXT, SRT, VTT):\n${result.transcriptPaths.txt}\n${result.transcriptPaths.srt}\n${result.transcriptPaths.vtt}`
+            : 'Captions were off — no transcript files written.'
+        ].join('\n\n');
+
+        setStatus(summary);
+        showTrophyCelebration(summary);
+      } finally {
+        unsubProgress();
+        resetTranscriptionProgress();
+        runPipelineBtn.disabled = false;
+      }
+    });
+
+    renderSlides();
+    renderCaptionMode();
+    renderTranscript();
+    setWizardStep(0);
+  </script>
+</body>
+</html>

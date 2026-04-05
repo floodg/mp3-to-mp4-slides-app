@@ -1,0 +1,20 @@
+# Dependencies (never commit — reinstall with npm install)
+node_modules/
+
+# TypeScript / Electron build output (reproducible with npm run build)
+dist/
+
+# App-generated exports
+output/
+
+# Logs & debug
+npm-debug.log*
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*
