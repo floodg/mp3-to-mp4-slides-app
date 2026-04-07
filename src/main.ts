@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, WebContents } from 'electron';
+import { performance } from 'perf_hooks';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -33,6 +34,35 @@ type ExportPayload = {
   fps: number;
   captions?: CaptionsConfig;
 };
+
+/** IPC body for `run-full-pipeline` (batch uses `audioPaths`; legacy single-file may send `audioPath`). */
+type RunFullPipelineRequest = Omit<ExportPayload, 'audioPath'> & {
+  audioPath?: string;
+  audioPaths?: string[];
+};
+
+function normalizePipelineAudioPaths(payload: RunFullPipelineRequest): string[] {
+  const fromBatch = payload.audioPaths?.filter(Boolean) ?? [];
+  if (fromBatch.length) return fromBatch;
+  if (payload.audioPath) return [payload.audioPath];
+  return [];
+}
+
+function removeDirQuiet(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+function pathIsUnderDir(filePath: string, dir: string): boolean {
+  const f = path.resolve(filePath);
+  const d = path.resolve(dir);
+  if (f === d) return true;
+  const prefix = d.endsWith(path.sep) ? d : d + path.sep;
+  return f.startsWith(prefix);
+}
 
 type TranscriptPayload = {
   audioPath: string;
@@ -158,6 +188,18 @@ let mainWindow: BrowserWindow | null = null;
  * Default save folders: ./output/... next to the project when running from source.
  * Packaged builds use userData/output (install dir is often read-only).
  */
+const DEFAULT_AUDIO_OPEN_DIR =
+  'C:\\Users\\gerar\\OneDrive\\Documents\\Book of Heaven - Francis Hogan\\MP3s';
+const DEFAULT_SLIDES_OPEN_DIR = 'C:\\Users\\gerar\\OneDrive\\Pictures';
+
+function dialogDefaultPath(dir: string): string | undefined {
+  try {
+    return fs.existsSync(dir) ? dir : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function ensureOutputSubdir(...parts: string[]): string {
   const base = app.isPackaged
     ? path.join(app.getPath('userData'), 'output')
@@ -182,7 +224,9 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Web Audio after long async export otherwise stays suspended without a new gesture
+      autoplayPolicy: 'no-user-gesture-required'
     }
   });
 
@@ -354,65 +398,69 @@ async function buildSlidesVideo(
   onProgress?: (localPercent: number | null) => void
 ): Promise<void> {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'slides-video-'));
-  const concatFilePath = path.join(tempDir, 'slides.txt');
+  try {
+    const concatFilePath = path.join(tempDir, 'slides.txt');
 
-  const totalSpecified = slides.reduce((sum, s) => sum + (s.durationSeconds ?? 0), 0);
-  const unspecifiedCount = slides.filter(s => !s.durationSeconds || s.durationSeconds <= 0).length;
-  const remaining = Math.max(targetDuration - totalSpecified, 0);
-  const autoDuration = unspecifiedCount > 0 ? remaining / unspecifiedCount : 0;
+    const totalSpecified = slides.reduce((sum, s) => sum + (s.durationSeconds ?? 0), 0);
+    const unspecifiedCount = slides.filter(s => !s.durationSeconds || s.durationSeconds <= 0).length;
+    const remaining = Math.max(targetDuration - totalSpecified, 0);
+    const autoDuration = unspecifiedCount > 0 ? remaining / unspecifiedCount : 0;
 
-  const normalized = slides.map((slide) => ({
-    path: slide.path,
-    duration: (slide.durationSeconds && slide.durationSeconds > 0) ? slide.durationSeconds : autoDuration
-  })).filter(s => s.duration > 0);
+    const normalized = slides.map((slide) => ({
+      path: slide.path,
+      duration: (slide.durationSeconds && slide.durationSeconds > 0) ? slide.durationSeconds : autoDuration
+    })).filter(s => s.duration > 0);
 
-  if (normalized.length === 0) {
-    throw new Error('No valid slide durations could be calculated.');
-  }
+    if (normalized.length === 0) {
+      throw new Error('No valid slide durations could be calculated.');
+    }
 
-  const concatLines: string[] = [];
-  normalized.forEach((slide, idx) => {
-    concatLines.push(`file '${escapeForFfmpegConcat(path.resolve(slide.path))}'`);
-    concatLines.push(`duration ${slide.duration.toFixed(3)}`);
-    if (idx === normalized.length - 1) {
+    const concatLines: string[] = [];
+    normalized.forEach((slide, idx) => {
       concatLines.push(`file '${escapeForFfmpegConcat(path.resolve(slide.path))}'`);
+      concatLines.push(`duration ${slide.duration.toFixed(3)}`);
+      if (idx === normalized.length - 1) {
+        concatLines.push(`file '${escapeForFfmpegConcat(path.resolve(slide.path))}'`);
+      }
+    });
+
+    fs.writeFileSync(concatFilePath, concatLines.join('\n'), 'utf8');
+
+    const [outW, outH] = resolution.split('x').map((n) => Number(n));
+    if (!outW || !outH) {
+      throw new Error(`Invalid resolution "${resolution}"; expected WIDTHxHEIGHT (e.g. 1920x1080).`);
     }
-  });
 
-  fs.writeFileSync(concatFilePath, concatLines.join('\n'), 'utf8');
+    await new Promise<void>((resolve, reject) => {
+      const cmd = ffmpeg()
+        .input(concatFilePath)
+        .inputOptions(['-safe 0', '-f concat'])
+        .outputOptions([
+          '-y',
+          `-vf scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2,format=yuv420p`,
+          `-r ${fps}`,
+          '-pix_fmt yuv420p',
+          '-c:v libx264'
+        ])
+        .save(targetVideoPath);
 
-  const [outW, outH] = resolution.split('x').map((n) => Number(n));
-  if (!outW || !outH) {
-    throw new Error(`Invalid resolution "${resolution}"; expected WIDTHxHEIGHT (e.g. 1920x1080).`);
+      if (onProgress) {
+        cmd.on('progress', progress => {
+          const p = progressFromFfmpegEvent(progress, targetDuration);
+          onProgress(p);
+        });
+      }
+
+      cmd
+        .on('end', () => {
+          onProgress?.(100);
+          resolve();
+        })
+        .on('error', (err) => reject(err));
+    });
+  } finally {
+    removeDirQuiet(tempDir);
   }
-
-  await new Promise<void>((resolve, reject) => {
-    const cmd = ffmpeg()
-      .input(concatFilePath)
-      .inputOptions(['-safe 0', '-f concat'])
-      .outputOptions([
-        '-y',
-        `-vf scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2,format=yuv420p`,
-        `-r ${fps}`,
-        '-pix_fmt yuv420p',
-        '-c:v libx264'
-      ])
-      .save(targetVideoPath);
-
-    if (onProgress) {
-      cmd.on('progress', progress => {
-        const p = progressFromFfmpegEvent(progress, targetDuration);
-        onProgress(p);
-      });
-    }
-
-    cmd
-      .on('end', () => {
-        onProgress?.(100);
-        resolve();
-      })
-      .on('error', (err) => reject(err));
-  });
 }
 
 async function createWavForTranscription(audioPath: string, wavPath: string, onProgress?: (percent: number) => void): Promise<void> {
@@ -684,127 +732,297 @@ async function runExportCore(
   options?: { existingSrtPath?: string }
 ): Promise<{ outputPath: string; captionsApplied: boolean; srtPath: string | null }> {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp3-to-mp4-'));
-  const tempVideoOnlyPath = path.join(tempDir, 'slides-only.mp4');
+  try {
+    const tempVideoOnlyPath = path.join(tempDir, 'slides-only.mp4');
 
-  const exportProfile: ExportProgressProfile = !payload.captions?.enabled
-    ? 'none'
-    : payload.captions.mode === 'whisperCpp'
-      ? 'whisper'
-      : 'importSrt';
-  const pr = getExportProgressRanges(exportProfile);
+    const exportProfile: ExportProgressProfile = !payload.captions?.enabled
+      ? 'none'
+      : payload.captions.mode === 'whisperCpp'
+        ? 'whisper'
+        : 'importSrt';
+    const pr = getExportProgressRanges(exportProfile);
 
-  const mapTranscriptProgress: ProgressSend = (p) => {
-    if (p.percent == null) {
-      send({ ...p, percent: null });
-      return;
-    }
-    const span = pr.transcriptTo - pr.transcriptFrom;
-    send({ ...p, percent: pr.transcriptFrom + (p.percent / 100) * span });
-  };
-
-  send({ stage: 'export', percent: null, label: 'Preparing export…' });
-  const audioDuration = await getAudioDuration(payload.audioPath);
-
-  await buildSlidesVideo(
-    payload.slides,
-    tempVideoOnlyPath,
-    payload.resolution,
-    payload.fps,
-    audioDuration,
-    (local) => {
-      if (local == null) {
-        send({ stage: 'slides', percent: null, label: 'Encoding slides from images…' });
+    const mapTranscriptProgress: ProgressSend = (p) => {
+      if (p.percent == null) {
+        send({ ...p, percent: null });
         return;
       }
-      const slideSpan = pr.slideTo - pr.slideFrom;
-      send({
-        stage: 'slides',
-        percent: pr.slideFrom + (local / 100) * slideSpan,
-        label: local >= 99 ? 'Finishing slide video…' : `Encoding slides… ${Math.round(local)}%`
-      });
-    }
-  );
+      const span = pr.transcriptTo - pr.transcriptFrom;
+      send({ ...p, percent: pr.transcriptFrom + (p.percent / 100) * span });
+    };
 
-  send({ stage: 'slides', percent: pr.slideTo, label: 'Slide video ready.' });
+    send({ stage: 'export', percent: null, label: 'Preparing export…' });
+    const audioDuration = await getAudioDuration(payload.audioPath);
 
-  let resolvedSrtPath: string | undefined;
-  if (options?.existingSrtPath) {
-    resolvedSrtPath = options.existingSrtPath;
-  } else {
-    resolvedSrtPath = await resolveSrtFromCaptions(
-      payload.audioPath,
-      payload.captions,
-      tempDir,
-      exportProfile === 'none' ? undefined : mapTranscriptProgress
-    );
-  }
-
-  const muxSpan = pr.muxTo - pr.muxFrom;
-  if (resolvedSrtPath) {
-    const burnSrtPath = path.join(tempDir, 'burn-subtitles.srt');
-    fs.copyFileSync(resolvedSrtPath, burnSrtPath);
-
-    await muxAudioVideoAndBurnSubtitles(
+    await buildSlidesVideo(
+      payload.slides,
       tempVideoOnlyPath,
-      payload.audioPath,
-      burnSrtPath,
-      outputPath,
-      payload.fps,
       payload.resolution,
-      payload.captions,
+      payload.fps,
       audioDuration,
       (local) => {
         if (local == null) {
-          send({ stage: 'mux', percent: null, label: 'Muxing and burning subtitles…' });
+          send({ stage: 'slides', percent: null, label: 'Encoding slides from images…' });
           return;
         }
+        const slideSpan = pr.slideTo - pr.slideFrom;
         send({
-          stage: 'mux',
-          percent: pr.muxFrom + (local / 100) * muxSpan,
-          label: `Final encode… ${Math.round(local)}%`
+          stage: 'slides',
+          percent: pr.slideFrom + (local / 100) * slideSpan,
+          label: local >= 99 ? 'Finishing slide video…' : `Encoding slides… ${Math.round(local)}%`
         });
       }
     );
-  } else {
-    await muxAudioAndVideo(
-      tempVideoOnlyPath,
-      payload.audioPath,
+
+    send({ stage: 'slides', percent: pr.slideTo, label: 'Slide video ready.' });
+
+    let resolvedSrtPath: string | undefined;
+    if (options?.existingSrtPath) {
+      resolvedSrtPath = options.existingSrtPath;
+    } else {
+      resolvedSrtPath = await resolveSrtFromCaptions(
+        payload.audioPath,
+        payload.captions,
+        tempDir,
+        exportProfile === 'none' ? undefined : mapTranscriptProgress
+      );
+    }
+
+    const muxSpan = pr.muxTo - pr.muxFrom;
+    if (resolvedSrtPath) {
+      const burnSrtPath = path.join(tempDir, 'burn-subtitles.srt');
+      fs.copyFileSync(resolvedSrtPath, burnSrtPath);
+
+      await muxAudioVideoAndBurnSubtitles(
+        tempVideoOnlyPath,
+        payload.audioPath,
+        burnSrtPath,
+        outputPath,
+        payload.fps,
+        payload.resolution,
+        payload.captions,
+        audioDuration,
+        (local) => {
+          if (local == null) {
+            send({ stage: 'mux', percent: null, label: 'Muxing and burning subtitles…' });
+            return;
+          }
+          send({
+            stage: 'mux',
+            percent: pr.muxFrom + (local / 100) * muxSpan,
+            label: `Final encode… ${Math.round(local)}%`
+          });
+        }
+      );
+    } else {
+      await muxAudioAndVideo(
+        tempVideoOnlyPath,
+        payload.audioPath,
+        outputPath,
+        audioDuration,
+        (local) => {
+          if (local == null) {
+            send({ stage: 'mux', percent: null, label: 'Muxing audio and video (-c:v copy)…' });
+            return;
+          }
+          send({
+            stage: 'mux',
+            percent: pr.muxFrom + (local / 100) * muxSpan,
+            label: `Muxing… ${Math.round(local)}%`
+          });
+        }
+      );
+    }
+
+    send({ stage: 'export', percent: 100, label: 'Export complete.' });
+
+    let outSrt: string | null = resolvedSrtPath ?? null;
+    const sidecarSrt = path.join(
+      path.dirname(outputPath),
+      `${path.basename(outputPath, path.extname(outputPath))}.srt`
+    );
+    if (outSrt && pathIsUnderDir(outSrt, tempDir)) {
+      fs.copyFileSync(outSrt, sidecarSrt);
+      outSrt = sidecarSrt;
+    } else if (
+      outSrt &&
+      options?.existingSrtPath &&
+      path.resolve(outSrt) === path.resolve(options.existingSrtPath) &&
+      !pathIsUnderDir(outSrt, tempDir) &&
+      pathIsUnderDir(outSrt, os.tmpdir())
+    ) {
+      fs.copyFileSync(outSrt, sidecarSrt);
+      outSrt = sidecarSrt;
+    }
+
+    return {
       outputPath,
-      audioDuration,
-      (local) => {
-        if (local == null) {
-          send({ stage: 'mux', percent: null, label: 'Muxing audio and video (-c:v copy)…' });
-          return;
-        }
-        send({
-          stage: 'mux',
-          percent: pr.muxFrom + (local / 100) * muxSpan,
-          label: `Muxing… ${Math.round(local)}%`
-        });
+      captionsApplied: Boolean(resolvedSrtPath),
+      srtPath: outSrt
+    };
+  } finally {
+    removeDirQuiet(tempDir);
+  }
+}
+
+type PipelineFileStats = {
+  /** Whisper/import + saving TXT/SRT/VTT; null when captions are off. */
+  transcriptSec: number | null;
+  /** Slide encode + final mux (`runExportCore`). */
+  videoSec: number;
+  /** Wall time for this file in the pipeline. */
+  totalSec: number;
+};
+
+type SinglePipelineFileResult = {
+  audioPath: string;
+  mp4Path: string;
+  transcriptPaths: { txt: string; srt: string; vtt: string } | null;
+  plainText: string | null;
+  srtContent: string | null;
+  vttContent: string | null;
+  stats: PipelineFileStats;
+};
+
+function wrapBatchProgressSend(batchSend: ProgressSend, fileIndex: number, totalFiles: number): ProgressSend {
+  const prefix = () => `File ${fileIndex + 1} of ${totalFiles} — `;
+  return (p) => {
+    if (p.percent == null) {
+      batchSend({ ...p, percent: null, label: prefix() + p.label });
+      return;
+    }
+    const overall = ((fileIndex + p.percent / 100) / totalFiles) * 100;
+    batchSend({ ...p, percent: overall, label: prefix() + p.label });
+  };
+}
+
+async function runSingleFullPipelineFile(
+  audioPath: string,
+  payload: Omit<RunFullPipelineRequest, 'audioPath' | 'audioPaths'>,
+  send: ProgressSend,
+  transcriptsDir: string,
+  exportsDir: string
+): Promise<Omit<SinglePipelineFileResult, 'audioPath'>> {
+  const base = safeFileBase(path.basename(audioPath, path.extname(audioPath)));
+  const mp4Path = path.join(exportsDir, `${base}.mp4`);
+
+  const TRANSCRIPT_END = 28;
+  const SAVE_END = 35;
+  const EXPORT_START = 35;
+
+  let existingSrtPath: string | undefined;
+  let plainTextResult: string | null = null;
+  let srtContentResult: string | null = null;
+  let vttContentResult: string | null = null;
+  let transcriptDir: string | undefined;
+  let transcriptSec: number | null = null;
+  let videoSec = 0;
+
+  const fileStart = performance.now();
+
+  try {
+    if (payload.captions?.enabled) {
+      if (payload.captions.mode === 'importSrt' && !payload.captions.srtPath) {
+        throw new Error('Captions are enabled. Choose an SRT file first.');
       }
-    );
+      if (
+        payload.captions.mode === 'whisperCpp' &&
+        (!payload.captions.whisperExecutablePath || !payload.captions.whisperModelPath)
+      ) {
+        throw new Error('Captions are enabled. Choose the whisper.cpp executable and model file first.');
+      }
+
+      const transcriptStart = performance.now();
+      transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-transcript-'));
+      const mapTranscriptOnly: ProgressSend = (p) => {
+        if (p.percent == null) {
+          send({ ...p, percent: null, label: p.label });
+        } else {
+          send({ ...p, percent: (p.percent / 100) * TRANSCRIPT_END, label: p.label });
+        }
+      };
+      const srtPath = await resolveSrtFromCaptions(
+        audioPath,
+        payload.captions,
+        transcriptDir,
+        mapTranscriptOnly
+      );
+      if (!srtPath) throw new Error('Could not resolve subtitles.');
+      const srtContent = fs.readFileSync(srtPath, 'utf8');
+      const plainText = srtToPlainText(srtContent);
+      const vttContent = srtToVtt(srtContent);
+      plainTextResult = plainText;
+      srtContentResult = srtContent;
+      vttContentResult = vttContent;
+
+      send({ stage: 'save', percent: TRANSCRIPT_END, label: 'Saving TXT, SRT, and VTT…' });
+      fs.writeFileSync(path.join(transcriptsDir, `${base}.txt`), plainText, 'utf8');
+      fs.writeFileSync(path.join(transcriptsDir, `${base}.srt`), srtContent, 'utf8');
+      fs.writeFileSync(path.join(transcriptsDir, `${base}.vtt`), vttContent, 'utf8');
+      existingSrtPath = srtPath;
+      send({ stage: 'save', percent: SAVE_END, label: 'Transcript files saved.' });
+      transcriptSec = (performance.now() - transcriptStart) / 1000;
+    }
+
+    const exportPayload: ExportPayload = {
+      audioPath,
+      slides: payload.slides,
+      resolution: payload.resolution,
+      fps: payload.fps,
+      captions: payload.captions
+    };
+
+    const mapExport: ProgressSend = (p) => {
+      if (p.percent == null) {
+        send({ ...p, percent: null, label: p.label });
+      } else {
+        const start = payload.captions?.enabled ? EXPORT_START : 0;
+        send({ ...p, percent: start + (p.percent / 100) * (100 - start), label: p.label });
+      }
+    };
+
+    const videoStart = performance.now();
+    await runExportCore(exportPayload, mp4Path, mapExport, {
+      existingSrtPath: payload.captions?.enabled ? existingSrtPath : undefined
+    });
+    videoSec = (performance.now() - videoStart) / 1000;
+  } finally {
+    if (transcriptDir) removeDirQuiet(transcriptDir);
   }
 
-  send({ stage: 'export', percent: 100, label: 'Export complete.' });
+  const totalSec = (performance.now() - fileStart) / 1000;
 
   return {
-    outputPath,
-    captionsApplied: Boolean(resolvedSrtPath),
-    srtPath: resolvedSrtPath ?? null
+    mp4Path,
+    transcriptPaths: payload.captions?.enabled
+      ? {
+          txt: path.join(transcriptsDir, `${base}.txt`),
+          srt: path.join(transcriptsDir, `${base}.srt`),
+          vtt: path.join(transcriptsDir, `${base}.vtt`)
+        }
+      : null,
+    plainText: plainTextResult,
+    srtContent: srtContentResult,
+    vttContent: vttContentResult,
+    stats: { transcriptSec, videoSec, totalSec }
   };
 }
 
 ipcMain.handle('pick-audio', async () => {
+  const defaultPath = dialogDefaultPath(DEFAULT_AUDIO_OPEN_DIR);
   const result = await dialog.showOpenDialog({
-    properties: ['openFile'],
+    ...(defaultPath ? { defaultPath } : {}),
+    properties: ['openFile', 'multiSelections'],
     filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'm4a', 'aac'] }]
   });
 
-  return result.canceled ? null : result.filePaths[0];
+  return result.canceled ? [] : result.filePaths;
 });
 
 ipcMain.handle('pick-slides', async () => {
+  const defaultPath = dialogDefaultPath(DEFAULT_SLIDES_OPEN_DIR);
   const result = await dialog.showOpenDialog({
+    ...(defaultPath ? { defaultPath } : {}),
     properties: ['openFile', 'multiSelections'],
     filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]
   });
@@ -843,9 +1061,14 @@ ipcMain.handle('generate-transcript', async (_event, payload: TranscriptPayload)
     const plainText = srtToPlainText(srtContent);
     const vttContent = srtToVtt(srtContent);
 
+    const transcriptsDir = ensureOutputSubdir('transcripts');
+    const base = safeFileBase(path.basename(payload.audioPath, path.extname(payload.audioPath)));
+    const persistentSrt = path.join(transcriptsDir, `${base}.gen.srt`);
+    fs.copyFileSync(srtPath, persistentSrt);
+
     return {
       success: true,
-      srtPath,
+      srtPath: persistentSrt,
       srtContent,
       plainText,
       vttContent
@@ -855,6 +1078,8 @@ ipcMain.handle('generate-transcript', async (_event, payload: TranscriptPayload)
       success: false,
       error: error?.message || 'Transcript generation failed.'
     };
+  } finally {
+    removeDirQuiet(tempDir);
   }
 });
 
@@ -919,91 +1144,61 @@ ipcMain.handle('export-video', async (_event, payload: ExportPayload) => {
   }
 });
 
-ipcMain.handle('run-full-pipeline', async (_event, payload: ExportPayload) => {
+ipcMain.handle('run-full-pipeline', async (_event, payload: RunFullPipelineRequest) => {
   const send = createThrottledProgressSender(_event.sender);
-  const base = safeFileBase(path.basename(payload.audioPath, path.extname(payload.audioPath)));
+  const audioPaths = normalizePipelineAudioPaths(payload);
+  if (!audioPaths.length) {
+    return { success: false, error: 'No audio files specified.' };
+  }
+  if (audioPaths.length > 1 && payload.captions?.enabled && payload.captions.mode === 'importSrt') {
+    return {
+      success: false,
+      error:
+        'Imported subtitles apply to one audio file only. Switch to Whisper, turn off captions, or process one file at a time.'
+    };
+  }
+
   const transcriptsDir = ensureOutputSubdir('transcripts');
   const exportsDir = ensureOutputSubdir('exports');
-  const mp4Path = path.join(exportsDir, `${base}.mp4`);
-
-  const TRANSCRIPT_END = 28;
-  const SAVE_END = 35;
-  const EXPORT_START = 35;
+  const rest: Omit<RunFullPipelineRequest, 'audioPath' | 'audioPaths'> = {
+    slides: payload.slides,
+    resolution: payload.resolution,
+    fps: payload.fps,
+    captions: payload.captions
+  };
 
   try {
     send({ stage: 'pipeline', percent: null, label: 'Starting full export…' });
-    let existingSrtPath: string | undefined;
-    let plainTextResult: string | null = null;
-    let srtContentResult: string | null = null;
-    let vttContentResult: string | null = null;
+    const results: SinglePipelineFileResult[] = [];
+    const total = audioPaths.length;
+    const batchStart = performance.now();
 
-    if (payload.captions?.enabled) {
-      if (payload.captions.mode === 'importSrt' && !payload.captions.srtPath) {
-        throw new Error('Captions are enabled. Choose an SRT file first.');
+    for (let i = 0; i < total; i++) {
+      try {
+        const perFileSend = wrapBatchProgressSend(send, i, total);
+        const r = await runSingleFullPipelineFile(audioPaths[i], rest, perFileSend, transcriptsDir, exportsDir);
+        results.push({ audioPath: audioPaths[i], ...r });
+      } catch (err: any) {
+        return {
+          success: false,
+          error: err?.message || 'Pipeline failed.',
+          failedAtAudioPath: audioPaths[i]
+        };
       }
-      if (
-        payload.captions.mode === 'whisperCpp' &&
-        (!payload.captions.whisperExecutablePath || !payload.captions.whisperModelPath)
-      ) {
-        throw new Error('Captions are enabled. Choose the whisper.cpp executable and model file first.');
-      }
-
-      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-transcript-'));
-      const mapTranscriptOnly: ProgressSend = (p) => {
-        if (p.percent == null) {
-          send({ ...p, percent: null, label: p.label });
-        } else {
-          send({ ...p, percent: (p.percent / 100) * TRANSCRIPT_END, label: p.label });
-        }
-      };
-      const srtPath = await resolveSrtFromCaptions(
-        payload.audioPath,
-        payload.captions,
-        transcriptDir,
-        mapTranscriptOnly
-      );
-      if (!srtPath) throw new Error('Could not resolve subtitles.');
-      const srtContent = fs.readFileSync(srtPath, 'utf8');
-      const plainText = srtToPlainText(srtContent);
-      const vttContent = srtToVtt(srtContent);
-      plainTextResult = plainText;
-      srtContentResult = srtContent;
-      vttContentResult = vttContent;
-
-      send({ stage: 'save', percent: TRANSCRIPT_END, label: 'Saving TXT, SRT, and VTT…' });
-      fs.writeFileSync(path.join(transcriptsDir, `${base}.txt`), plainText, 'utf8');
-      fs.writeFileSync(path.join(transcriptsDir, `${base}.srt`), srtContent, 'utf8');
-      fs.writeFileSync(path.join(transcriptsDir, `${base}.vtt`), vttContent, 'utf8');
-      existingSrtPath = srtPath;
-      send({ stage: 'save', percent: SAVE_END, label: 'Transcript files saved.' });
     }
 
-    const mapExport: ProgressSend = (p) => {
-      if (p.percent == null) {
-        send({ ...p, percent: null, label: p.label });
-      } else {
-        const start = payload.captions?.enabled ? EXPORT_START : 0;
-        send({ ...p, percent: start + (p.percent / 100) * (100 - start), label: p.label });
-      }
-    };
-
-    const r = await runExportCore(payload, mp4Path, mapExport, {
-      existingSrtPath: payload.captions?.enabled ? existingSrtPath : undefined
-    });
-
+    const batchTotalSec = (performance.now() - batchStart) / 1000;
+    const last = results[results.length - 1];
     return {
       success: true,
-      mp4Path: r.outputPath,
-      transcriptPaths: payload.captions?.enabled
-        ? {
-            txt: path.join(transcriptsDir, `${base}.txt`),
-            srt: path.join(transcriptsDir, `${base}.srt`),
-            vtt: path.join(transcriptsDir, `${base}.vtt`)
-          }
-        : null,
-      plainText: plainTextResult,
-      srtContent: srtContentResult,
-      vttContent: vttContentResult
+      results,
+      batchTotalSec,
+      mp4Path: last.mp4Path,
+      transcriptPaths: last.transcriptPaths,
+      plainText: last.plainText,
+      srtContent: last.srtContent,
+      vttContent: last.vttContent,
+      stats: last.stats
     };
   } catch (error: any) {
     return {

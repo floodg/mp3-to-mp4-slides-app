@@ -7,7 +7,7 @@ type TranscriptionProgressPayload = {
 declare global {
   interface Window {
     appApi: {
-      pickAudio: () => Promise<string | null>;
+      pickAudio: () => Promise<string[]>;
       pickSlides: () => Promise<string[]>;
       pickSrt: () => Promise<string | null>;
       pickAnyFile: () => Promise<string | null>;
