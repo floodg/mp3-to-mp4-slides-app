@@ -30,7 +30,7 @@ type ExportPayload = {
   audioPath: string;
   slides: SlideInput[];
   outputPath?: string;
-  resolution: '1280x720' | '1920x1080';
+  resolution: '640x360' | '854x480' | '1280x720' | '1920x1080';
   fps: number;
   captions?: CaptionsConfig;
 };
@@ -259,18 +259,6 @@ function escapeForFfmpegConcat(inputPath: string): string {
   return inputPath.replace(/'/g, "'\\''");
 }
 
-function normalizeForSubtitleFilter(inputPath: string): string {
-  return path
-    .resolve(inputPath)
-    .replace(/\\/g, '/')
-    .replace(/:/g, '\\:')
-    .replace(/ /g, '\\ ')
-    .replace(/'/g, "\\'")
-    .replace(/,/g, '\\,')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]');
-}
-
 function srtTimestampToSeconds(timestamp: string): number {
   const match = timestamp.trim().match(/(\d{2}):(\d{2}):(\d{2}),(\d{3})/);
   if (!match) return 0;
@@ -322,71 +310,6 @@ function srtToVtt(srtContent: string): string {
     return `${index + 1}\n${secondsToVttTimestamp(block.start)} --> ${secondsToVttTimestamp(block.end)}\n${block.text}`;
   });
   return `WEBVTT\n\n${vttBlocks.join('\n\n')}\n`;
-}
-
-function secondsToAssTimestamp(totalSeconds: number): string {
-  let sec = Math.max(0, totalSeconds);
-  const h = Math.floor(sec / 3600);
-  sec -= h * 3600;
-  const m = Math.floor(sec / 60);
-  sec -= m * 60;
-  const whole = Math.floor(sec);
-  const centis = Math.round((sec - whole) * 100);
-  const c = centis >= 100 ? 99 : centis;
-  return `${h}:${String(m).padStart(2, '0')}:${String(whole).padStart(2, '0')}.${String(c).padStart(2, '0')}`;
-}
-
-function escapeAssDialogueText(text: string): string {
-  return text
-    .replace(/\r/g, '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/\\/g, '\\\\')
-    .replace(/{/g, '\\{')
-    .replace(/}/g, '\\}')
-    .replace(/\n/g, '\\N')
-    .trim();
-}
-
-/** ASS with explicit PlayRes + Style so alignment/outline do not depend on ffmpeg force_style. */
-function buildBurnInAssFromSrt(
-  srtContent: string,
-  playResX: number,
-  playResY: number,
-  fontName: string,
-  fontSize: number,
-  marginV: number
-): string {
-  const blocks = parseSrtBlocks(srtContent);
-  const styleLine =
-    `Style: Default,${fontName},${fontSize},` +
-    `&H00FFFFFF,&H000000FF,&H00000000,&H40000000,` +
-    `0,0,0,0,100,100,0,0,` +
-    `1,3,0,8,0,0,${marginV},1`;
-
-  const header =
-    `[Script Info]\n` +
-    `Title: burn\n` +
-    `ScriptType: v4.00+\n` +
-    `WrapStyle: 0\n` +
-    `ScaledBorderAndShadow: yes\n` +
-    `PlayResX: ${playResX}\n` +
-    `PlayResY: ${playResY}\n` +
-    `\n` +
-    `[V4+ Styles]\n` +
-    `Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
-    `${styleLine}\n` +
-    `\n` +
-    `[Events]\n` +
-    `Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
-
-  const dialogues = blocks.map((block) => {
-    const start = secondsToAssTimestamp(block.start);
-    const end = secondsToAssTimestamp(Math.max(block.end, block.start + 0.05));
-    const body = escapeAssDialogueText(block.text);
-    return `Dialogue: 0,${start},${end},Default,,0,0,0,,${body}`;
-  });
-
-  return header + dialogues.join('\n') + '\n';
 }
 
 async function buildSlidesVideo(
@@ -638,91 +561,71 @@ async function muxAudioAndVideo(
   });
 }
 
-async function muxAudioVideoAndBurnSubtitles(
-  videoPath: string,
-  audioPath: string,
-  srtPath: string,
-  outputPath: string,
-  fps: number,
-  resolution: string,
-  captions: CaptionsConfig | undefined,
-  durationHintSeconds: number,
-  onProgress?: (localPercent: number | null) => void
-): Promise<void> {
-  const [outW, outH] = resolution.split('x').map((n) => Number(n));
-  if (!outW || !outH) {
-    throw new Error(`Invalid resolution "${resolution}" for subtitle burn.`);
-  }
-
-  const bandRatio = 0.12;
-  const topBand = Math.max(56, Math.round(outH * bandRatio));
-  const bottomBand = topBand;
-  const contentH = outH - topBand - bottomBand;
-
-  const userFontSize = Math.max(16, Number(captions?.fontSize ?? 28));
-  const refH = 720;
-  const scaled = Math.round(userFontSize * (outH / refH));
-  const burnFontSize = Math.max(22, Math.min(scaled, Math.floor(outH * 0.15)));
-  const marginV = Math.max(10, Number(captions?.marginV ?? 26));
-  const marginFromTop = Math.max(
-    4,
-    Math.min(marginV, Math.floor(topBand * 0.22), topBand - burnFontSize - 6)
-  );
-
-  const srtContent = fs.readFileSync(srtPath, 'utf8');
-  const assPath = path.join(path.dirname(srtPath), 'burn-subtitles.ass');
-  const assBody = buildBurnInAssFromSrt(srtContent, outW, outH, 'Arial', burnFontSize, marginFromTop);
-  fs.writeFileSync(assPath, assBody, 'utf8');
-  const subtitlePath = normalizeForSubtitleFilter(assPath);
-
-  const layoutChain =
-    `scale=w=${outW}:h=${contentH}:force_original_aspect_ratio=decrease,` +
-    `pad=${outW}:${contentH}:(ow-iw)/2:(oh-ih)/2,` +
-    `pad=${outW}:${outH}:0:${topBand}`;
-
-  const vf = `${layoutChain},subtitles='${subtitlePath}'`;
-
-  await new Promise<void>((resolve, reject) => {
-    const cmd = ffmpeg()
-      .input(videoPath)
-      .input(audioPath)
-      .outputOptions([
-        '-y',
-        '-vf',
-        vf,
-        '-r',
-        String(fps),
-        '-c:v',
-        'libx264',
-        '-pix_fmt',
-        'yuv420p',
-        '-c:a',
-        'aac',
-        '-b:a',
-        '192k',
-        '-shortest'
-      ])
-      .save(outputPath);
-
-    if (onProgress) {
-      cmd.on('progress', progress => {
-        onProgress(progressFromFfmpegEvent(progress, durationHintSeconds));
-      });
-    }
-
-    cmd
-      .on('end', () => {
-        onProgress?.(100);
-        resolve();
-      })
-      .on('error', (err) => reject(err));
-  });
-}
-
 function safeFileBase(name: string): string {
   const trimmed = name.replace(/[/\\?%*:|"<>]/g, '_').replace(/\s+/g, ' ').trim();
   const s = trimmed.length > 0 ? trimmed : 'output';
   return s.length > 120 ? s.slice(0, 120) : s;
+}
+
+/**
+ * Same as Rename-VolumeExports.ps1 -BookOfHeaven. Default on; set MP4_EXPORT_BOOK_OF_HEAVEN_PREFIX=0 or false to disable.
+ */
+const BOOK_OF_HEAVEN_EXPORT_PREFIX = !/^(0|false)$/i.test(
+  String(process.env.MP4_EXPORT_BOOK_OF_HEAVEN_PREFIX ?? '1').trim()
+);
+
+const COPY_OF_VOL_STEM_PATTERN =
+  /^\s*Copy\s+of\s+Vol(?:ume)?\s+(\d+)\s+(?:-\s+)?No\.?(?:umber)?\s*(\d+)\s*$/i;
+/** e.g. "Vol 19 - audio 1" → same export base as Copy-of-Vol form */
+const VOL_AUDIO_STEM_PATTERN = /^\s*Vol(?:ume)?\s+(\d+)\s+-\s+audio\s+(\d+)\s*$/i;
+const VOLUME_NUMBER_FORM_STEM_PATTERN = /^Volume\s+\d+\s+-\s+Number\s+\d+\s*$/i;
+const BOOK_OF_HEAVEN_ALREADY_PREFIX = /^Book\s+of\s+Heaven\s+/i;
+
+function stripTrailingDotsFromStem(stem: string): string {
+  let s = stem;
+  while (s.length > 0 && s.endsWith('.')) {
+    s = s.slice(0, -1);
+  }
+  return s;
+}
+
+/**
+ * Basename without extension, mirroring Rename-VolumeExports.ps1 (Copy of Vol… / Vol … - audio … → Volume … - Number …).
+ * Pass result through safeFileBase before using as a filename.
+ */
+function volumeExportBaseFromAudioStem(rawStem: string, bookOfHeaven: boolean): string {
+  const stem = stripTrailingDotsFromStem(rawStem.trim());
+
+  const m = stem.match(COPY_OF_VOL_STEM_PATTERN);
+  if (m) {
+    const vol = m[1];
+    const num = m[2];
+    const core = `Volume ${vol} - Number ${num}`;
+    return bookOfHeaven ? `Book of Heaven ${core}` : core;
+  }
+
+  const mAudio = stem.match(VOL_AUDIO_STEM_PATTERN);
+  if (mAudio) {
+    const vol = mAudio[1];
+    const num = mAudio[2];
+    const core = `Volume ${vol} - Number ${num}`;
+    return bookOfHeaven ? `Book of Heaven ${core}` : core;
+  }
+
+  if (
+    bookOfHeaven &&
+    VOLUME_NUMBER_FORM_STEM_PATTERN.test(stem) &&
+    !BOOK_OF_HEAVEN_ALREADY_PREFIX.test(stem)
+  ) {
+    return `Book of Heaven ${stem}`;
+  }
+
+  return stem;
+}
+
+function exportFileBaseFromAudioPath(audioPath: string): string {
+  const rawStem = path.basename(audioPath, path.extname(audioPath));
+  return safeFileBase(volumeExportBaseFromAudioStem(rawStem, BOOK_OF_HEAVEN_EXPORT_PREFIX));
 }
 
 async function runExportCore(
@@ -751,8 +654,14 @@ async function runExportCore(
       send({ ...p, percent: pr.transcriptFrom + (p.percent / 100) * span });
     };
 
-    send({ stage: 'export', percent: null, label: 'Preparing export…' });
+    send({ stage: 'export', percent: null, label: 'Probing audio duration…' });
     const audioDuration = await getAudioDuration(payload.audioPath);
+    const durMin = Math.round(audioDuration / 60);
+    send({
+      stage: 'export',
+      percent: null,
+      label: `Encoding slides to ~${durMin} min H.264 (often the slowest step; first progress may take a minute)…`
+    });
 
     await buildSlidesVideo(
       payload.slides,
@@ -789,50 +698,30 @@ async function runExportCore(
     }
 
     const muxSpan = pr.muxTo - pr.muxFrom;
-    if (resolvedSrtPath) {
-      const burnSrtPath = path.join(tempDir, 'burn-subtitles.srt');
-      fs.copyFileSync(resolvedSrtPath, burnSrtPath);
-
-      await muxAudioVideoAndBurnSubtitles(
-        tempVideoOnlyPath,
-        payload.audioPath,
-        burnSrtPath,
-        outputPath,
-        payload.fps,
-        payload.resolution,
-        payload.captions,
-        audioDuration,
-        (local) => {
-          if (local == null) {
-            send({ stage: 'mux', percent: null, label: 'Muxing and burning subtitles…' });
-            return;
-          }
+    await muxAudioAndVideo(
+      tempVideoOnlyPath,
+      payload.audioPath,
+      outputPath,
+      audioDuration,
+      (local) => {
+        if (local == null) {
           send({
             stage: 'mux',
-            percent: pr.muxFrom + (local / 100) * muxSpan,
-            label: `Final encode… ${Math.round(local)}%`
+            percent: null,
+            label:
+              resolvedSrtPath != null
+                ? 'Muxing audio + slides (-c:v copy). Subtitles stay in TXT/SRT/VTT only…'
+                : 'Muxing audio and video (-c:v copy)…'
           });
+          return;
         }
-      );
-    } else {
-      await muxAudioAndVideo(
-        tempVideoOnlyPath,
-        payload.audioPath,
-        outputPath,
-        audioDuration,
-        (local) => {
-          if (local == null) {
-            send({ stage: 'mux', percent: null, label: 'Muxing audio and video (-c:v copy)…' });
-            return;
-          }
-          send({
-            stage: 'mux',
-            percent: pr.muxFrom + (local / 100) * muxSpan,
-            label: `Muxing… ${Math.round(local)}%`
-          });
-        }
-      );
-    }
+        send({
+          stage: 'mux',
+          percent: pr.muxFrom + (local / 100) * muxSpan,
+          label: `Muxing… ${Math.round(local)}%`
+        });
+      }
+    );
 
     send({ stage: 'export', percent: 100, label: 'Export complete.' });
 
@@ -903,7 +792,7 @@ async function runSingleFullPipelineFile(
   transcriptsDir: string,
   exportsDir: string
 ): Promise<Omit<SinglePipelineFileResult, 'audioPath'>> {
-  const base = safeFileBase(path.basename(audioPath, path.extname(audioPath)));
+  const base = exportFileBaseFromAudioPath(audioPath);
   const mp4Path = path.join(exportsDir, `${base}.mp4`);
 
   const TRANSCRIPT_END = 28;
@@ -1062,7 +951,7 @@ ipcMain.handle('generate-transcript', async (_event, payload: TranscriptPayload)
     const vttContent = srtToVtt(srtContent);
 
     const transcriptsDir = ensureOutputSubdir('transcripts');
-    const base = safeFileBase(path.basename(payload.audioPath, path.extname(payload.audioPath)));
+    const base = exportFileBaseFromAudioPath(payload.audioPath);
     const persistentSrt = path.join(transcriptsDir, `${base}.gen.srt`);
     fs.copyFileSync(srtPath, persistentSrt);
 
@@ -1115,7 +1004,8 @@ ipcMain.handle('save-transcript', async (_event, payload: { defaultBaseName?: st
 ipcMain.handle('export-video', async (_event, payload: ExportPayload) => {
   const send = createThrottledProgressSender(_event.sender);
   const defaultOutput =
-    payload.outputPath || path.join(ensureOutputSubdir('exports'), 'slideshow-video.mp4');
+    payload.outputPath ||
+    path.join(ensureOutputSubdir('exports'), `${exportFileBaseFromAudioPath(payload.audioPath)}.mp4`);
 
   const saveResult = await dialog.showSaveDialog({
     defaultPath: defaultOutput,

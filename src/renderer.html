@@ -350,11 +350,13 @@
             <select id="resolution">
               <option value="1920x1080">1920x1080 (Full HD)</option>
               <option value="1280x720">1280x720 (HD)</option>
+              <option value="854x480" selected>854x480 (480p, smaller file)</option>
+              <option value="640x360">640x360 (360p, smallest)</option>
             </select>
           </div>
           <div class="stack-tight">
             <label for="fps">Frames per second</label>
-            <input id="fps" type="number" min="1" max="60" value="30" />
+            <input id="fps" type="number" min="1" max="60" value="24" />
           </div>
         </div>
       </div>
@@ -367,31 +369,17 @@
         <span class="wizard-step-chevron" aria-hidden="true">▼</span>
       </button>
       <div class="wizard-step-body" id="wizardPanel2" role="region" aria-labelledby="wizardHeader2">
-        <p class="muted" style="margin-top: 0;">On export with burned-in captions, the picture is letterboxed: burned text goes in the top black bar; the bottom bar is left clear for player subtitles (other languages) on a black strip.</p>
+        <p class="muted" style="margin-top: 0;">The MP4 is slides + audio only (no text burned into the video). When captions are on, TXT, SRT, and VTT are written to <code>output/transcripts</code>—upload the SRT or VTT to YouTube (or use another player’s subtitle track).</p>
         <div class="inline" style="margin-bottom: 14px;">
           <label><input id="captionsEnabled" type="checkbox" checked /> Enable captions / transcript tools</label>
         </div>
         <div id="captionsConfig" class="stack">
-          <div class="row">
-            <div class="stack-tight">
-              <label for="captionMode">Caption source</label>
-              <select id="captionMode">
-                <option value="importSrt">Import SRT file</option>
-                <option value="whisperCpp" selected>Generate transcript with whisper.cpp</option>
-              </select>
-            </div>
-            <div class="stack-tight">
-              <label for="captionFontSize">Caption font size (burned text scales with export height; raise this for larger subtitles)</label>
-              <input id="captionFontSize" type="number" min="16" max="120" value="72" />
-            </div>
-          </div>
-
-          <div class="row">
-            <div class="stack-tight">
-              <label for="captionMarginV">Burned caption inset (from top)</label>
-              <input id="captionMarginV" type="number" min="10" max="150" value="26" />
-            </div>
-            <div></div>
+          <div class="stack-tight" style="max-width: 420px;">
+            <label for="captionMode">Caption source</label>
+            <select id="captionMode">
+              <option value="importSrt">Import SRT file</option>
+              <option value="whisperCpp" selected>Generate transcript with whisper.cpp</option>
+            </select>
           </div>
 
           <div id="srtPanel" class="stack hidden">
@@ -446,7 +434,7 @@
         <span class="wizard-step-chevron" aria-hidden="true">▼</span>
       </button>
       <div class="wizard-step-body" id="wizardPanel4" role="region" aria-labelledby="wizardHeader4">
-        <p class="muted" style="margin-top: 0;">One progress bar for the whole job: each file runs in order (transcript when captions are on → TXT, SRT, and VTT under <code>output/transcripts</code> → MP4 in <code>output/exports</code>, named from each audio file).</p>
+        <p class="muted" style="margin-top: 0;">One progress bar for the whole job: transcript when captions are on → TXT, SRT, VTT in <code>output/transcripts</code> → MP4 (slides + audio, fast mux) in <code>output/exports</code>. Final encode no longer re-encodes for burned-in text, so export is quicker.</p>
         <div class="inline wrap-buttons">
           <button type="button" id="runPipelineBtn">Generate, save all formats, and export MP4</button>
           <button type="button" id="testBellBtn" class="secondary">Test completion sound</button>
@@ -762,8 +750,8 @@
         srtPath: state.srtPath,
         whisperExecutablePath: state.whisperExecutablePath,
         whisperModelPath: state.whisperModelPath,
-        fontSize: Number(document.getElementById('captionFontSize').value || 28),
-        marginV: Number(document.getElementById('captionMarginV').value || 26)
+        fontSize: 28,
+        marginV: 26
       };
     }
 
@@ -994,7 +982,7 @@
       }
 
       const resolution = document.getElementById('resolution').value;
-      const fps = Number(document.getElementById('fps').value || 30);
+      const fps = Number(document.getElementById('fps').value || 24);
 
       primeCompletionBellAudio();
       runPipelineBtn.disabled = true;
