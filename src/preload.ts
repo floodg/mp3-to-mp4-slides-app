@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('appApi', {
   saveTranscript: (payload: any) => ipcRenderer.invoke('save-transcript', payload),
   exportVideo: (payload: any) => ipcRenderer.invoke('export-video', payload),
   runFullPipeline: (payload: any) => ipcRenderer.invoke('run-full-pipeline', payload),
+  runTranscriptsOnly: (payload: any) => ipcRenderer.invoke('run-transcripts-only', payload),
   onTranscriptionProgress: (callback: (payload: TranscriptionProgressPayload) => void) => {
     const listener = (_event: IpcRendererEvent, payload: TranscriptionProgressPayload) => {
       callback(payload);

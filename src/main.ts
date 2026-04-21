@@ -1034,6 +1034,129 @@ ipcMain.handle('export-video', async (_event, payload: ExportPayload) => {
   }
 });
 
+type RunTranscriptsOnlyRequest = {
+  audioPaths?: string[];
+  audioPath?: string;
+  captions?: CaptionsConfig;
+};
+
+type TranscriptsOnlyFileResult = {
+  audioPath: string;
+  transcriptPaths: { txt: string; srt: string; vtt: string };
+  plainText: string;
+  srtContent: string;
+  vttContent: string;
+  stats: { transcriptSec: number; totalSec: number };
+};
+
+async function runSingleTranscriptOnlyFile(
+  audioPath: string,
+  captions: CaptionsConfig,
+  send: ProgressSend,
+  transcriptsDir: string
+): Promise<Omit<TranscriptsOnlyFileResult, 'audioPath'>> {
+  const base = exportFileBaseFromAudioPath(audioPath);
+  const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'transcripts-only-'));
+  const fileStart = performance.now();
+  try {
+    const transcriptStart = performance.now();
+    const srtPath = await resolveSrtFromCaptions(audioPath, captions, transcriptDir, send);
+    if (!srtPath) throw new Error('Could not resolve subtitles.');
+    const srtContent = fs.readFileSync(srtPath, 'utf8');
+    const plainText = srtToPlainText(srtContent);
+    const vttContent = srtToVtt(srtContent);
+
+    send({ stage: 'save', percent: null, label: 'Saving TXT, SRT, and VTT…' });
+    const txtOut = path.join(transcriptsDir, `${base}.txt`);
+    const srtOut = path.join(transcriptsDir, `${base}.srt`);
+    const vttOut = path.join(transcriptsDir, `${base}.vtt`);
+    fs.writeFileSync(txtOut, plainText, 'utf8');
+    fs.writeFileSync(srtOut, srtContent, 'utf8');
+    fs.writeFileSync(vttOut, vttContent, 'utf8');
+    send({ stage: 'save', percent: 100, label: 'Transcript files saved.' });
+
+    const transcriptSec = (performance.now() - transcriptStart) / 1000;
+    const totalSec = (performance.now() - fileStart) / 1000;
+    return {
+      transcriptPaths: { txt: txtOut, srt: srtOut, vtt: vttOut },
+      plainText,
+      srtContent,
+      vttContent,
+      stats: { transcriptSec, totalSec }
+    };
+  } finally {
+    removeDirQuiet(transcriptDir);
+  }
+}
+
+ipcMain.handle('run-transcripts-only', async (_event, payload: RunTranscriptsOnlyRequest) => {
+  const send = createThrottledProgressSender(_event.sender);
+  const audioPaths = (payload.audioPaths?.filter(Boolean) ?? []).length
+    ? payload.audioPaths!.filter(Boolean)
+    : payload.audioPath
+      ? [payload.audioPath]
+      : [];
+  if (!audioPaths.length) {
+    return { success: false, error: 'No audio files specified.' };
+  }
+  if (!payload.captions?.enabled) {
+    return { success: false, error: 'Captions must be enabled to transcribe.' };
+  }
+  if (audioPaths.length > 1 && payload.captions.mode === 'importSrt') {
+    return {
+      success: false,
+      error:
+        'Imported subtitles apply to one audio file only. Switch to Whisper or process one file at a time.'
+    };
+  }
+
+  const transcriptsDir = ensureOutputSubdir('transcripts');
+
+  try {
+    send({ stage: 'pipeline', percent: null, label: 'Starting transcripts-only run…' });
+    const results: TranscriptsOnlyFileResult[] = [];
+    const total = audioPaths.length;
+    const batchStart = performance.now();
+
+    for (let i = 0; i < total; i++) {
+      try {
+        const perFileSend = wrapBatchProgressSend(send, i, total);
+        const r = await runSingleTranscriptOnlyFile(
+          audioPaths[i],
+          payload.captions,
+          perFileSend,
+          transcriptsDir
+        );
+        results.push({ audioPath: audioPaths[i], ...r });
+      } catch (err: any) {
+        return {
+          success: false,
+          error: err?.message || 'Transcription failed.',
+          failedAtAudioPath: audioPaths[i]
+        };
+      }
+    }
+
+    const batchTotalSec = (performance.now() - batchStart) / 1000;
+    const last = results[results.length - 1];
+    return {
+      success: true,
+      results,
+      batchTotalSec,
+      transcriptPaths: last.transcriptPaths,
+      plainText: last.plainText,
+      srtContent: last.srtContent,
+      vttContent: last.vttContent,
+      stats: last.stats
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error?.message || 'Transcription failed.'
+    };
+  }
+});
+
 ipcMain.handle('run-full-pipeline', async (_event, payload: RunFullPipelineRequest) => {
   const send = createThrottledProgressSender(_event.sender);
   const audioPaths = normalizePipelineAudioPaths(payload);

@@ -435,6 +435,9 @@
       </button>
       <div class="wizard-step-body" id="wizardPanel4" role="region" aria-labelledby="wizardHeader4">
         <p class="muted" style="margin-top: 0;">One progress bar for the whole job: transcript when captions are on → TXT, SRT, VTT in <code>output/transcripts</code> → MP4 (slides + audio, fast mux) in <code>output/exports</code>. Final encode no longer re-encodes for burned-in text, so export is quicker.</p>
+        <div class="inline" style="margin-bottom: 12px;">
+          <label><input id="transcriptsOnly" type="checkbox" /> Transcripts only — skip MP4 (writes TXT, SRT, VTT to <code>output/transcripts</code>)</label>
+        </div>
         <div class="inline wrap-buttons">
           <button type="button" id="runPipelineBtn">Generate, save all formats, and export MP4</button>
           <button type="button" id="testBellBtn" class="secondary">Test completion sound</button>
@@ -477,6 +480,7 @@
       slides: [{ path: DEFAULT_SLIDE_IMAGE }],
       captionsEnabled: true,
       captionMode: 'whisperCpp',
+      transcriptsOnly: false,
       srtPath: null,
       whisperExecutablePath: DEFAULT_WHISPER_EXECUTABLE,
       whisperModelPath: DEFAULT_WHISPER_MODEL,
@@ -504,6 +508,7 @@
     const transcriptPreviewEl = document.getElementById('transcriptPreview');
     const transcriptMetaEl = document.getElementById('transcriptMeta');
     const runPipelineBtn = document.getElementById('runPipelineBtn');
+    const transcriptsOnlyEl = document.getElementById('transcriptsOnly');
     const trophyOverlay = document.getElementById('trophyOverlay');
     const trophyDetail = document.getElementById('trophyDetail');
     const trophyDismiss = document.getElementById('trophyDismiss');
@@ -797,6 +802,13 @@
 
     function updateRunButtonLabel() {
       const n = state.audioPaths.length;
+      if (state.transcriptsOnly) {
+        runPipelineBtn.textContent =
+          n > 1
+            ? `Transcribe ${n} files to output/transcripts`
+            : 'Transcribe to output/transcripts';
+        return;
+      }
       runPipelineBtn.textContent =
         n > 1
           ? `Export ${n} MP4s (same slides for each)`
@@ -924,6 +936,16 @@
       renderCaptionMode();
     });
 
+    transcriptsOnlyEl.addEventListener('change', (e) => {
+      state.transcriptsOnly = e.target.checked;
+      if (state.transcriptsOnly && !state.captionsEnabled) {
+        state.captionsEnabled = true;
+        captionsEnabledEl.checked = true;
+        renderCaptionMode();
+      }
+      updateRunButtonLabel();
+    });
+
     captionModeEl.addEventListener('change', (e) => {
       state.captionMode = e.target.value;
       clearTranscript();
@@ -968,8 +990,12 @@
         );
         return;
       }
-      if (!state.slides.length) {
+      if (!state.transcriptsOnly && !state.slides.length) {
         setStatus('Add at least one slide first.');
+        return;
+      }
+      if (state.transcriptsOnly && !state.captionsEnabled) {
+        setStatus('Transcripts-only mode needs captions enabled so it has a transcript source.');
         return;
       }
       if (state.captionsEnabled && state.captionMode === 'importSrt' && !state.srtPath) {
@@ -986,23 +1012,28 @@
 
       primeCompletionBellAudio();
       runPipelineBtn.disabled = true;
-      setStatus('Running full pipeline…');
+      setStatus(state.transcriptsOnly ? 'Transcribing to output/transcripts…' : 'Running full pipeline…');
 
       transcriptionProgressWrap.classList.remove('hidden');
       applyTranscriptionProgress({ stage: '', percent: null, label: 'Starting…' });
       const unsubProgress = window.appApi.onTranscriptionProgress(applyTranscriptionProgress);
       try {
-        const result = await window.appApi.runFullPipeline({
-          audioPaths: state.audioPaths,
-          slides: state.slides,
-          resolution,
-          fps,
-          captions: getCaptionsPayload()
-        });
+        const result = state.transcriptsOnly
+          ? await window.appApi.runTranscriptsOnly({
+              audioPaths: state.audioPaths,
+              captions: getCaptionsPayload()
+            })
+          : await window.appApi.runFullPipeline({
+              audioPaths: state.audioPaths,
+              slides: state.slides,
+              resolution,
+              fps,
+              captions: getCaptionsPayload()
+            });
 
         if (!result?.success) {
           const failPath = result.failedAtAudioPath ? `\nFailed on:\n${result.failedAtAudioPath}` : '';
-          setStatus(`Pipeline failed.\n${result?.error || 'Unknown error.'}${failPath}`);
+          setStatus(`${state.transcriptsOnly ? 'Transcription' : 'Pipeline'} failed.\n${result?.error || 'Unknown error.'}${failPath}`);
           return;
         }
 
@@ -1026,7 +1057,28 @@
         renderTranscript();
 
         let summary;
-        if (rows.length > 1) {
+        if (state.transcriptsOnly) {
+          if (rows.length > 1) {
+            summary = rows
+              .map((r, i) => {
+                const head = `${i + 1}. ${getFilename(r.audioPath)}`;
+                const tr = `Transcripts:\n${r.transcriptPaths.txt}\n${r.transcriptPaths.srt}\n${r.transcriptPaths.vtt}`;
+                const timing = r.stats ? `\nTiming: total ${formatDurationSec(r.stats.totalSec)}` : '';
+                return [head, tr, timing.trim()].filter(Boolean).join('\n');
+              })
+              .join('\n\n—\n\n');
+            if (typeof result.batchTotalSec === 'number' && !Number.isNaN(result.batchTotalSec)) {
+              summary += `\n\n—\nBatch wall time: ${formatDurationSec(result.batchTotalSec)}`;
+            }
+          } else {
+            summary = result.transcriptPaths
+              ? `Transcripts (TXT, SRT, VTT):\n${result.transcriptPaths.txt}\n${result.transcriptPaths.srt}\n${result.transcriptPaths.vtt}`
+              : 'No transcript files written.';
+            if (result.stats) {
+              summary += `\n\nTiming: total ${formatDurationSec(result.stats.totalSec)}`;
+            }
+          }
+        } else if (rows.length > 1) {
           summary = rows
             .map((r, i) => {
               const head = `${i + 1}. ${getFilename(r.audioPath)}`;
@@ -1053,10 +1105,13 @@
         }
 
         setStatus(summary);
-        const trophyBlurb =
-          rows.length > 1
-            ? `All ${rows.length} exports finished. See the status box below for file paths.`
-            : 'Export finished. See the status box below for file paths.';
+        const trophyBlurb = state.transcriptsOnly
+          ? (rows.length > 1
+              ? `All ${rows.length} transcripts saved to output/transcripts.`
+              : 'Transcript saved to output/transcripts.')
+          : (rows.length > 1
+              ? `All ${rows.length} exports finished. See the status box below for file paths.`
+              : 'Export finished. See the status box below for file paths.');
         playCompletionBell();
         showTrophyCelebration(trophyBlurb);
       } finally {

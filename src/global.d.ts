@@ -15,6 +15,7 @@ declare global {
       saveTranscript: (payload: any) => Promise<any>;
       exportVideo: (payload: any) => Promise<any>;
       runFullPipeline: (payload: any) => Promise<any>;
+      runTranscriptsOnly: (payload: any) => Promise<any>;
       onTranscriptionProgress: (callback: (payload: TranscriptionProgressPayload) => void) => () => void;
     };
   }
